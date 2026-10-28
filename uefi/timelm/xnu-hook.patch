@@ -50,15 +50,14 @@
  
  //
  // Global Variables
-@@ -98,6 +112,8 @@
- EFIAPI
- PlatformBootManagerAfterConsole ()
- {
-+  TimelmTryXnuPayload ();
-+
-   EFI_STATUS                    Status      = EFI_SUCCESS;
-   EFI_GRAPHICS_OUTPUT_PROTOCOL *GopProtocol = NULL;
+@@ -124,6 +138,7 @@
  
+   // Execute Secondary After Console
+   DeviceBootManagerAfterConsole ();
++  TimelmTryXnuPayload ();
+ }
+ 
+ VOID
 --- a/Platforms/LG/timelmPkg/Library/MemoryMapLib/MemoryMapLib.c
 +++ b/Platforms/LG/timelmPkg/Library/MemoryMapLib/MemoryMapLib.c
 @@ -13,6 +13,7 @@

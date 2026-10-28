@@ -58,7 +58,7 @@ if ! skip uefi && [ "$KIND" = phone ]; then
 	if [ -n "$UEFI_FD" ] || [ -f "$FD" ]; then
 		echo "already there (${UEFI_FD:-$FD})"
 	else
-		[ -d Mu-Silicium ] || uefi/apply.sh
+		if [ "$DEVICE_ARG" = timelm ]; then uefi/apply.sh; else [ -d Mu-Silicium ] || uefi/apply.sh; fi
 		[ -x venv/bin/python3 ] || python3 -m venv venv
 		venv/bin/pip install -q -r Mu-Silicium/pip-requirements.txt
 		# mu_nasm comes through NuGet, which needs Mono; without Mono the system's nasm stands in (uefi/README.md)
@@ -68,7 +68,7 @@ if ! skip uefi && [ "$KIND" = phone ]; then
 			echo 'version: 20016.1.1' > $D/extdep_state.yaml
 			ln -sf "$(command -v nasm)" "$(command -v ndisasm)" $D/Linux-x86-64/
 		fi
-		(cd Mu-Silicium && . ../venv/bin/activate && python3 build_uefi.py -d "$UEFI_TARGET" -r RELEASE)
+		(cd Mu-Silicium && . ../venv/bin/activate && if [ "$DEVICE_ARG" = timelm ]; then bash Resources/Scripts/build_timelm.sh RELEASE; else python3 build_uefi.py -d "$UEFI_TARGET" -r RELEASE; fi)
 		[ -f "$FD" ] || die "the UEFI build made no $FD (Mu-Silicium/Build/BUILDLOG_${UEFI_TARGET}Pkg.txt)"
 	fi
 fi

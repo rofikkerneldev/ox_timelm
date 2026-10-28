@@ -31,6 +31,7 @@ if ! skip kernel; then
 		[ -f $K ] && { [ $K -nt out/.kernel-start ] || ! grep -q "error:" out/kernel-build.log; } &&
 			echo "build: kernel $(stat -c %s $K) bytes" || die "kernel build failed, see out/kernel-build.log"
 	else
+		if [ "$DEVICE" = timelm ]; then die "timelm requires theiOS16.5 SDK and a fresh kernel build"; fi
 		echo "build: no theos/iPhoneOS16.5.sdk: using prebuilt/mach.development.bcm2837"
 	fi
 fi
