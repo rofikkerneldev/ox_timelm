@@ -7,6 +7,9 @@ import subprocess
 
 root = Path(__file__).resolve().parent.parent
 files = subprocess.check_output(['git', '-C', str(root), 'ls-files'], text=True).splitlines()
+required = {'xnuloader/timelm.h', 'uefi/timelm/TimelmPayload.h',
+            'common/devices/timelm.conf', 'tools/ci-build.sh'}
+assert required <= set(files), 'Required source files are not tracked: ' + str(required - set(files))
 for name in files:
     p = root / name
     if not p.is_file():

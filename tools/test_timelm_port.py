@@ -24,6 +24,8 @@ int main(void) {
  assert(!timelm_ram_window(0x180000000ULL,0x200000000ULL,&base,&size));
  assert(!timelm_ram_window(0x200000000ULL,0x400000000ULL,&base,&size));
  assert(!timelm_ram_window(0x17fffffffULL,0x180000000ULL,&base,&size));
+ assert(!timelm_ram_window(UINT64_MAX-1,UINT64_MAX,&base,&size));
+ assert(!timelm_ram_window(0x100000000ULL,0,&base,&size));
  unsigned char p[72]={0x58,0x4e,0x55,0x50,64};
  memcpy(p+8,"loader.efi",11);p[24]=4;p[32]='M';p[33]='Z';
  const unsigned char *image=0;unsigned int length=0;
