@@ -1,0 +1,14 @@
+{
+  "kernel": {
+    "repository": "https://github.com/leh0726/G986N-iOS.git",
+    "commit": "946de0fed8e583606ca0470506c9e847f45e926f",
+    "xnu_tag": "xnu-8796.121.2"
+  },
+  "uefi": {
+    "repository": "git@github.com:rofikkerneldev/test_mu-timelm.git",
+    "commit": "ce79e9016d8283eb25e1d3b1fb8ef69f1ec6eaad",
+    "profile": "native-touch-10-point"
+  },
+  "device": "timelm",
+  "root_filesystem_writes": false
+}

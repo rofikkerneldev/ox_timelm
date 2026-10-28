@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "repository": "git@github.com:rofikkerneldev/test_mu-timelm.git",
+  "commit": "ce79e9016d8283eb25e1d3b1fb8ef69f1ec6eaad",
+  "profile": "native-touch-10-point",
+  "inputs_sha256": {
+    "Platforms/LG/timelmPkg/Library/MemoryMapLib/MemoryMapLib.c": "97f18fb7200a3b109f9f61ad398ee2364453b81e490090930ec2299f5afc6621",
+    "Resources/DeviceOverlays/timelm/ACPI/DSDT.aml": "129d9d834c4bc75b3fd316c23f376788f069c23ec335eed91c6b090a119fc6e3",
+    "Resources/DeviceOverlays/timelm/ACPI/SSDT-TOUCH.aml": "79aab95e716573b511d12538d6d44d6c07361ea9278382a5eaf4b8260b7a3501"
+  },
+  "published_inputs_sha256": {
+    "Platforms/LG/timelmPkg/Library/MemoryMapLib/MemoryMapLib.c": "a3a88c5fdf0966d2464cf7fde35fe25b2cfefc50707ec518a813d4d922893e28",
+    "Resources/DeviceOverlays/timelm/ACPI/DSDT.aml": "129d9d834c4bc75b3fd316c23f376788f069c23ec335eed91c6b090a119fc6e3",
+    "Resources/DeviceOverlays/timelm/ACPI/SSDT-TOUCH.aml": "79aab95e716573b511d12538d6d44d6c07361ea9278382a5eaf4b8260b7a3501"
+  },
+  "memory_map_published_line_endings": "CRLF; Git blob is LF",
+  "acpi_submodule": "2d465ad77c25de908f0ec7bdfcb57f865b61233c",
+  "kernel_source": {
+    "repository": "https://github.com/leh0726/G986N-iOS.git",
+    "commit": "946de0fed8e583606ca0470506c9e847f45e926f"
+  },
+  "fd_base": "0x9fc00000",
+  "fd_size": "0x300000",
+  "payload_base": "0xf0000000",
+  "payload_size": "0x4000000"
+}

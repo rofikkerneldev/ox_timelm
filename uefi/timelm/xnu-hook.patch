@@ -1,0 +1,71 @@
+--- a/BootShim/BootShim.S
++++ b/BootShim/BootShim.S
+@@ -28,6 +28,26 @@
+   stp   x2, x3, [x5], #16
+   subs  x6, x6, #16
+   b.ne  _CopyLoop
++#ifdef PAYLOAD_BASE
++  ldr   w2, [x4]
++  movz  w3, #0x4E58
++  movk  w3, #0x5055, lsl #16
++  cmp   w2, w3
++  b.ne  _NoXnuPayload
++  ldr   w6, [x4, #4]
++  add   x6, x6, #23
++  and   x6, x6, #~15
++  mov   x7, #0x04000000
++  cmp   x6, x7
++  b.hi  _NoXnuPayload
++  movz  x5, #(PAYLOAD_BASE >> 16), lsl #16
++_CopyXnuPayload:
++  ldp   x2, x3, [x4], #16
++  stp   x2, x3, [x5], #16
++  subs  x6, x6, #16
++  b.ne  _CopyXnuPayload
++_NoXnuPayload:
++#endif
+   ldr   x5, =FD_BASE
+ 
+ _Entry:
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -22,6 +22,20 @@
+ #include <Configuration/BootDevices.h>
+ 
+ #include "BootManager.h"
++#include "TimelmPayload.h"
++
++STATIC VOID TimelmTryXnuPayload (VOID)
++{
++  CONST unsigned char *Image;
++  unsigned int Length;
++  EFI_HANDLE Handle;
++  if (!TimelmFindLoader ((CONST unsigned char *)(UINTN)0xF0000000,
++                        0x04000000, &Image, &Length)) return;
++  EFI_STATUS Status = gBS->LoadImage (FALSE, gImageHandle, NULL,
++                                     (VOID *)Image, Length, &Handle);
++  if (!EFI_ERROR (Status)) gBS->StartImage (Handle, NULL, NULL);
++}
++
+ 
+ //
+ // Global Variables
+@@ -98,6 +112,8 @@
+ EFIAPI
+ PlatformBootManagerAfterConsole ()
+ {
++  TimelmTryXnuPayload ();
++
+   EFI_STATUS                    Status      = EFI_SUCCESS;
+   EFI_GRAPHICS_OUTPUT_PROTOCOL *GopProtocol = NULL;
+ 
+--- a/Platforms/LG/timelmPkg/Library/MemoryMapLib/MemoryMapLib.c
++++ b/Platforms/LG/timelmPkg/Library/MemoryMapLib/MemoryMapLib.c
+@@ -13,6 +13,7 @@
+   {"XBL reserved", 0x80880000, 0x00004000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+   {"TZ reserved low", 0x80B00000, 0x01900000, HobOnlyNoCacheSetting, MEM_RES, UNCACHEABLE, Reserv, NS_DEVICE},
+   {"PIL reserved tail", 0x8C700000, 0x04600000, AddMem, MEM_RES, UNCACHEABLE, Reserv, UNCACHED_UNBUFFERED_XN},
++  {"XNU Payload", 0xF0000000, 0x04000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+   {"DDR address hole", 0x180000000, 0x80000000, HobOnlyNoCacheSetting, MEM_RES, UNCACHEABLE, Reserv, NS_DEVICE},
+   {"IPC SHM"            , 0x805D0000, 0x00020000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+   {"MPSS EFS"           , 0x80600000, 0x00100000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},

@@ -1,0 +1,12 @@
+{
+  "gpt_entry": 31,
+  "name": "ios",
+  "first_lba": 25798184,
+  "last_lba": 30853117,
+  "bytes": 20705009664,
+  "lun": 0,
+  "sector_bytes": 4096,
+  "filesystem": "HFSX",
+  "source_date": "2026-10-24",
+  "writes_enabled": false
+}
