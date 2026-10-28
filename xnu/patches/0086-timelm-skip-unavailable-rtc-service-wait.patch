@@ -1,0 +1,27 @@
+--- a/iokit/Kernel/IOStartIOKit.cpp
++++ b/iokit/Kernel/IOStartIOKit.cpp
+@@ -72,6 +72,12 @@
+ void
+ IOKitInitializeTime( void )
+ {
++#if defined(SWEET)
++	/* timelm has no IORTC service yet. Keep calendar initialization below,
++	 * using the platform expert's fallback time, without waiting for a
++	 * service that cannot match. This does not disable the hardware watchdog. */
++	kprintf("TIMELM RTC 0086: no IORTC driver, skipping 30s service wait\n");
++#else
+ 	mach_timespec_t         t;
+ 
+ 	t.tv_sec = 30;
+@@ -87,7 +93,11 @@
+ 		IOService::resourceMatching("IONVRAM"), &t );
+ #endif
+ 
++#endif /* SWEET */
+ 	clock_initialize_calendar();
++#if defined(SWEET)
++	kprintf("TIMELM RTC 0086: calendar initialized with platform fallback\n");
++#endif
+ }
+ 
+ void

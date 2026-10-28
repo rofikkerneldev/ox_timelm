@@ -1,0 +1,173 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6b926fe..2478269 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -622,14 +622,17 @@ sweet_ufs_init(void)
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
++	printf("SWEET UFS: taking over the host at 0x%llx\n", (unsigned long long)su.regs);
+ 	error = ufs_take_over_host();
+ 	if (!error) {
++		printf("SWEET UFS: host taken over, sending TEST UNIT READY\n");
+ 		static const uint8_t tur[6] = { 0x00 };
+ 		/* The first command after the bootloader may report a unit attention. */
+ 		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
+ 		}
+ 	}
+ 	if (!error) {
++		printf("SWEET UFS: looking for partition \"%s\"\n", want);
+ 		error = ufs_find_partition(want);
+ 	}
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+@@ -805,6 +808,41 @@ sweet_log_start(void)
+ 	}
+ }
+ 
++/*
++ * A heartbeat line every "sweetbeat" seconds (boot-arg, default 0 = off).
++ * The console is only readable from the phone screen, so this is what tells
++ * "the kernel hung here" apart from "the console stopped working".
++ */
++void sweet_heartbeat_start(void);
++
++static int sweet_heartbeat_chan;
++static uint32_t sweet_heartbeat_secs;
++
++static void __attribute__((noreturn))
++sweet_heartbeat_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint32_t n = 0;
++
++	for (;;) {
++		(void)tsleep(&sweet_heartbeat_chan, PZERO, "sweet-hb", hz * (int)sweet_heartbeat_secs);
++		printf("SWEET: heartbeat %u\n", ++n);
++	}
++}
++
++void
++sweet_heartbeat_start(void)
++{
++	thread_t thread;
++
++	PE_parse_boot_argn("sweetbeat", &sweet_heartbeat_secs, sizeof(sweet_heartbeat_secs));
++	if (sweet_heartbeat_secs == 0 || sweet_heartbeat_secs > 3600) {
++		return;
++	}
++	if (kernel_thread_start(sweet_heartbeat_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
+ /* Root device for rd=ufsroot0 (IOFindBSDRoot). */
+ int sweet_ufs_rootdev(dev_t *dev);
+ 
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..3f05c88 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -490,7 +490,13 @@ bsd_init(void)
+ 	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);
+ #endif
+ 
+-#define DEBUG_BSDINIT 0
++/*
++ * SWEET: the root mount happens deep inside bsd_init()/bsd_autoconf(), and
++ * the console is only readable from the phone screen, so every step has to
++ * be visible: without these the boot log stops at an arbitrary place and
++ * there is no way to tell which step hung.
++ */
++#define DEBUG_BSDINIT 1
+ 
+ #if DEBUG_BSDINIT
+ #define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 0631685..027386d 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -10,6 +10,9 @@
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
+ 
++/* Boot diagnostics: a heartbeat line every "sweetbeat" seconds. */
++extern "C" void sweet_heartbeat_start(void);
++
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+ 
+@@ -31,6 +34,8 @@ SweetPlatformExpert::start(IOService *provider)
+ 	}
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
++	/* Boot diagnostics: a heartbeat line every "sweetbeat" seconds. */
++	sweet_heartbeat_start();
+ 	return true;
+ }
+ 
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index e6c74aa..aae4e0f 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -773,6 +773,7 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 	if (strcmp(rdBootVar, "ufsroot0") == 0) {
+ 		extern int sweet_ufs_rootdev(dev_t *dev);
+ 		OSSafeReleaseNULL(matching);
++		IOLog("SWEET: IOFindBSDRoot: probing the UFS for the root volume\n");
+ 		int ufs_error = sweet_ufs_rootdev(root);
+ 		if (ufs_error) {
+ 			panic("IOFindBSDRoot: SWEET UFS root %s unavailable: %d", rdBootVar, ufs_error);
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 19f27cd..a106e27 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -707,8 +707,10 @@ register_serial_functions(struct pe_serial_functions *fns)
+  *   reg    = <phys size>       absolute physical address, not arm-io relative
+  *   width, height              pixels
+  *   stride                     bytes per line, 32bpp
+- * Lines wrap back to the top instead of scrolling; the line after the cursor
+- * is kept blank so the newest output is easy to find.
++ * The text scrolls: when the last row is full the whole text area moves up
++ * by one row, so the screen always holds the last fbcon_rows lines in the
++ * order they were printed. (It used to wrap back to the top, which mixed
++ * several boots in one screen and made the log impossible to read.)
+  */
+ 
+ extern unsigned char iso_font[256 * 16];
+@@ -732,13 +734,34 @@ fbcon_clear_row(uint32_t row)
+ 	}
+ }
+ 
++/*
++ * Move the text area up by one row and clear the last row: the screen then
++ * shows the most recent lines in the order they were printed.
++ */
++static void
++fbcon_scroll(void)
++{
++	uint32_t row_words = (fbcon_stride / 4) * (16 * FBCON_SCALE);
++	volatile uint32_t *dst = fbcon_base;
++	volatile uint32_t *src = fbcon_base + row_words;
++
++	for (uint32_t i = 0; i < row_words * (fbcon_rows - 1); i++) {
++		dst[i] = src[i];
++	}
++	fbcon_clear_row(fbcon_rows - 1);
++}
++
+ static void
+ fbcon_newline(void)
+ {
+ 	fbcon_col = 0;
+-	fbcon_row = (fbcon_row + 1) % fbcon_rows;
+-	fbcon_clear_row(fbcon_row);
+-	fbcon_clear_row((fbcon_row + 1) % fbcon_rows);
++	if (fbcon_row + 1 >= fbcon_rows) {
++		fbcon_scroll();
++		fbcon_row = fbcon_rows - 1;
++	} else {
++		fbcon_row++;
++		fbcon_clear_row(fbcon_row);
++	}
+ }
+ 
+ static void

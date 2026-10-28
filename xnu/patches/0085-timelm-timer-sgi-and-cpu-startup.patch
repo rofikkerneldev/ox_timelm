@@ -1,0 +1,455 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -607,7 +607,13 @@
+ 	su.cache = (cache == 1);
+ 	su.wait = (wait == 1);
+ 
++	printf("SWEET UFS: mapping host PA=0x%llx size=0x%llx\n",
++	    (unsigned long long)reg[0], (unsigned long long)reg[1]);
+ 	su.regs = ml_io_map(reg[0], reg[1]);
++	if (!su.regs) {
++		return ENOMEM;
++	}
++	printf("SWEET UFS: allocating contiguous DMA memory\n");
+ 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+@@ -815,6 +821,8 @@
+  */
+ void sweet_heartbeat_start(void);
+ 
++extern uint64_t sweet_cpu_irq_count(unsigned int cpu, unsigned int timer);
++
+ static int sweet_heartbeat_chan;
+ static uint32_t sweet_heartbeat_secs;
+ 
+@@ -822,10 +830,13 @@
+ sweet_heartbeat_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+ 	uint32_t n = 0;
++	char trial[64] = "unspecified";
++	PE_parse_boot_argn("timelm_trial", trial, sizeof(trial));
+ 
+ 	for (;;) {
+ 		(void)tsleep(&sweet_heartbeat_chan, PZERO, "sweet-hb", hz * (int)sweet_heartbeat_secs);
+-		printf("SWEET: heartbeat %u\n", ++n);
++		printf("TIMELM: trial=%s heartbeat=%u cpu0-timer=%llu cpu0-sgi1=%llu\n",
++		    trial, ++n, sweet_cpu_irq_count(0, 1), sweet_cpu_irq_count(0, 0));
+ 	}
+ }
+ 
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -692,6 +692,7 @@
+ 	 */
+ 	bsd_init_kprintf("calling IOKitInitializeTime\n");
+ 	IOKitInitializeTime();
++	bsd_init_kprintf("returned from IOKitInitializeTime\n");
+ 
+ 	/* Initialize the file systems. */
+ 	bsd_init_kprintf("calling vfsinit\n");
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -1,7 +1,7 @@
+ /*
+- * A55 SMP bring-up for sweet using XNU's legacy IOCPU interface and PSCI.
++ * LG V60 SMP bring-up using XNU's legacy IOCPU interface and PSCI.
+  * The architected timer and SGI1 already enter through pe_fiq/sleh_irq.
+- * CPU_OFF, suspend and the A76 cores still require separate platform work.
++ * CPU_OFF and suspend still require separate platform work.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -22,58 +22,22 @@
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+ extern "C" uint32_t sweet_cpu_signal_state(unsigned int cpu);
+ 
+-/*
+- * Bring-up handshake between the boot CPU and a secondary.
+- *
+- * XNU does not assume that the CPUs of this platform snoop each other's
+- * caches, so a flag written by a secondary only reaches the boot CPU after
+- * an explicit clean. Every CPU owns one aligned cache line so that the flag
+- * never shares a line with data that is written concurrently.
+- *
+- * Stage 0: nothing seen, 1: the secondary entered initCPU(), 2: the
+- * secondary finished initCPU() and runs.
+- */
+-#define SWEET_CPU_STAGE_NONE    0
++/* The CPUs share normal coherent kernel memory after enabling their MMUs. */
+ #define SWEET_CPU_STAGE_INIT    1
+ #define SWEET_CPU_STAGE_READY   2
+-
+-static volatile uint32_t sweet_cpu_stage[MAX_CPUS] __attribute__((aligned(64)));
+-
+-/* Kryo 470 uses 64 byte cache lines. */
+-#define SWEET_CACHE_LINE        64
+-
+-static inline void
+-sweet_cpu_clean_line(vm_offset_t addr)
+-{
+-	vm_offset_t p = addr & ~(vm_offset_t)(SWEET_CACHE_LINE - 1);
+-
+-	/* Clean the line to the point of coherency so other CPUs see it. */
+-	__asm__ volatile("dc civac, %0" :: "r"(p) : "memory");
+-	__builtin_arm_dsb(DSB_ISHST);
+-}
+-
+-static inline void
+-sweet_cpu_invalidate_line(vm_offset_t addr)
+-{
+-	vm_offset_t p = addr & ~(vm_offset_t)(SWEET_CACHE_LINE - 1);
+-
+-	/* Drop a stale copy of the line before reading it again. */
+-	__asm__ volatile("dc ivac, %0" :: "r"(p) : "memory");
+-	__builtin_arm_dsb(DSB_ISHST);
+-}
++static uint32_t sweet_cpu_stage[MAX_CPUS];
++extern "C" uint64_t sweet_cpu_irq_count(unsigned int cpu, unsigned int timer);
+ 
+ static inline void
+ sweet_cpu_publish_stage(unsigned int cpu, uint32_t stage)
+ {
+-	sweet_cpu_stage[cpu] = stage;
+-	sweet_cpu_clean_line((vm_offset_t)&sweet_cpu_stage[cpu]);
++	__atomic_store_n(&sweet_cpu_stage[cpu], stage, __ATOMIC_RELEASE);
+ }
+ 
+ static inline uint32_t
+ sweet_cpu_read_stage(unsigned int cpu)
+ {
+-	sweet_cpu_invalidate_line((vm_offset_t)&sweet_cpu_stage[cpu]);
+-	return sweet_cpu_stage[cpu];
++	return __atomic_load_n(&sweet_cpu_stage[cpu], __ATOMIC_ACQUIRE);
+ }
+ 
+ class SweetCPU;
+@@ -128,7 +92,7 @@
+ 	if (*(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) {
+ 		return false;
+ 	}
+-	/* MPIDR Aff1 = core: 0x000-0x500 A55, 0x600/0x700 A76 */
++	/* timelm: MPIDR Aff1 = core, four A55 and four A77-class CPUs. */
+ 	if (cpu->phys_id > 0x700 || (cpu->phys_id & 0xff) != 0 ||
+ 	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
+ 		panic("SWEET CPU: invalid topology cpu=%u mpidr=0x%x count=%u",
+@@ -137,7 +101,7 @@
+ 	if (!IOCPU::start(provider)) {
+ 		return false;
+ 	}
+-	cpuName = OSSymbol::withCStringNoCopy("Kryo 470");
++	cpuName = OSSymbol::withCStringNoCopy("Kryo 585");
+ 	if (cpuName == NULL) {
+ 		return false;
+ 	}
+@@ -200,16 +164,16 @@
+ 		}
+ 		IOSleep(1);
+ 	}
+-	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
++	/* The supplied ADT has cpu0 as the boot CPU and ascending core nodes. */
+ 	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
+ 		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
+ 	}
+ 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
+ 		SweetCPU *cpu = __atomic_load_n(&sweet_cpus[i], __ATOMIC_ACQUIRE);
++		uint64_t ipi_before = sweet_cpu_irq_count(i, 0);
+ 		kern_return_t kr = processor_start(cpu->machProcessor);
+ 		if (kr != KERN_SUCCESS) {
+-			IOLog("SWEET CPU: cpu=%u processor_start failed: %d\n", i, kr);
+-			break;
++			panic("SWEET CPU: cpu=%u processor_start failed: %d", i, kr);
+ 		}
+ 		/* processor_start() is asynchronous for secondaries in this XNU. */
+ 		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
+@@ -217,7 +181,7 @@
+ 		bool alive = false;
+ 		for (;;) {
+ 			uint32_t stage = sweet_cpu_read_stage(i);
+-			if (stage >= SWEET_CPU_STAGE_READY) {
++			if (stage >= SWEET_CPU_STAGE_READY && sweet_cpu_irq_count(i, 0) > ipi_before) {
+ 				alive = true;
+ 				break;
+ 			}
+@@ -228,25 +192,18 @@
+ 				break;
+ 			}
+ 			if (now >= report) {
+-				report = now + 250 * NSEC_PER_MSEC;
++				nanoseconds_to_deadline(250 * NSEC_PER_MSEC, &report);
+ 				IOLog("SWEET CPU: cpu=%u mpidr=0x%x waiting (stage=%u signal=0x%x)\n",
+ 				    i, topology->cpus[i].phys_id, stage, sweet_cpu_signal_state(i));
+ 			}
+-			IOSleep(1);
++			IODelay(1000);
+ 		}
+ 		if (!alive) {
+-			/*
+-			 * A secondary that does not come up must not keep the
+-			 * machine from booting: continue with the CPUs that
+-			 * work. The root volume does not care.
+-			 */
+-			IOLog("SWEET CPU: cpu=%u failed, continuing with %u CPU(s)\n", i, alive_cpus);
+-			break;
++			panic("SWEET CPU: cpu=%u startup failed; use a separate cpus=1 image", i);
+ 		}
+ 		alive_cpus = i + 1;
+-		IOLog("SWEET CPU: cpu=%u mpidr=0x%x came alive; SGI1 %s\n", i,
+-		    topology->cpus[i].phys_id,
+-		    sweet_cpu_signal_is_enabled(i) ? "OK" : "not confirmed");
++		IOLog("SWEET CPU: cpu=%u mpidr=0x%x SGI1 received=%llu timer-irqs=%llu\n", i,
++		    topology->cpus[i].phys_id, sweet_cpu_irq_count(i, 0), sweet_cpu_irq_count(i, 1));
+ 	}
+ 	/* Publish exactly once, after every selected CPU has completed initCPU(). */
+ 	ml_cpu_init_completed();
+@@ -286,7 +243,7 @@
+ 	    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
+ 	    __builtin_arm_rsr64("CurrentEL") >> 2, ml_get_interrupts_enabled());
+ 	__atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
+-	/* Ready: publish it to the boot CPU with an explicit cache clean. */
++	/* This stage alone does not prove SGI delivery; startAll checks its counter. */
+ 	sweet_cpu_publish_stage(getCPUNumber(), SWEET_CPU_STAGE_READY);
+ }
+ 
+@@ -304,21 +261,12 @@
+ 	if (aff0 >= 16) {
+ 		panic("SWEET CPU: SGI target requires unsupported range selector");
+ 	}
+-	/*
+-	 * GICv3 "Interrupt Routing Register" (ICC_SGI1R_EL1):
+-	 *   [3:0]   target list (the Aff0 of the target PE)
+-	 *   [10:4]  INTID
+-	 *   [23:16] Aff1
+-	 *   [31:24] Aff2
+-	 *   [63:32] Aff3
+-	 * The previous encoding put the INTID into the Aff2 field and the
+-	 * Aff1 of the target into the Aff3 field: every SGI was dropped.
+-	 */
+-	uint64_t sgi = (((mpidr >> 32) & 0xffULL) << 32) |	/* Aff3 */
+-	    (((mpidr >> 16) & 0xffULL) << 24) |		/* Aff2 */
+-	    (((mpidr >> 8) & 0xffULL) << 16) |		/* Aff1 */
+-	    ((uint64_t)SWEET_IPI_SGI << 4) |		/* INTID */
+-	    (1ULL << aff0);				/* target list */
++	/* ICC_SGI1R_EL1: TargetList[15:0], Aff1[23:16], INTID[27:24],
++	 * Aff2[39:32], Aff3[55:48]. RS remains zero for Aff0 < 16. */
++	uint64_t sgi = (((mpidr >> 32) & 0xffULL) << 48) |
++	    (((mpidr >> 16) & 0xffULL) << 32) |
++	    (((mpidr >> 8) & 0xffULL) << 16) |
++	    ((uint64_t)SWEET_IPI_SGI << 24) | (1ULL << aff0);
+ 	if (target == this) {
+ 		kprintf("SWEET CPU: cpu=%u self-SGI%d mpidr=0x%llx value=0x%llx\n",
+ 		    logical, SWEET_IPI_SGI, mpidr, sgi);
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -964,6 +964,31 @@
+ 
+ 
+ #if defined(SWEET)
++/* Count only handled virtual-timer IRQs and SGI1, without console I/O in IRQs. */
++static uint64_t sweet_timer_irqs[MAX_CPUS];
++static uint64_t sweet_sgi1_irqs[MAX_CPUS];
++void sweet_cpu_note_irq(unsigned int cpu, unsigned int timer);
++uint64_t sweet_cpu_irq_count(unsigned int cpu, unsigned int timer);
++
++void
++sweet_cpu_note_irq(unsigned int cpu, unsigned int timer)
++{
++	if (cpu < MAX_CPUS) {
++		uint64_t *counter = timer ? &sweet_timer_irqs[cpu] : &sweet_sgi1_irqs[cpu];
++		(void)__atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
++	}
++}
++
++uint64_t
++sweet_cpu_irq_count(unsigned int cpu, unsigned int timer)
++{
++	if (cpu >= MAX_CPUS) {
++		return 0;
++	}
++	uint64_t *counter = timer ? &sweet_timer_irqs[cpu] : &sweet_sgi1_irqs[cpu];
++	return __atomic_load_n(counter, __ATOMIC_ACQUIRE);
++}
++
+ /* Bring-up observer: the self-SGI clears SIGPdisabled after IRQs unmask. */
+ boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+ boolean_t
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1847,6 +1847,10 @@
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(SWEET)
++extern void sweet_cpu_note_irq(unsigned int cpu, unsigned int timer);
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -1868,6 +1872,7 @@
+ 		return; /* spurious */
+ 	}
+ 	if (intid == sweet_vtimer_intid) {
++		sweet_cpu_note_irq(cdp->cpu_number, 1);
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+@@ -1876,11 +1881,8 @@
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
+-		if (cdp->cpu_stat.ipi_cnt < 3) {
+-			/* The first IPIs show whether the SGI reaches a
+-			 * secondary at all. */
+-			kprintf("SWEET IPI: cpu=%u intid=%u ipi_cnt=%llu\n",
+-			    cdp->cpu_number, intid, cdp->cpu_stat.ipi_cnt);
++		if (intid == SWEET_IPI_SGI) {
++			sweet_cpu_note_irq(cdp->cpu_number, 0);
+ 		}
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -10,6 +10,7 @@
+ #include <machine/atomic.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/device_tree.h>
++#include <pexpert/pexpert.h>
+ #include <pexpert/arm64/board_config.h>
+ 
+ 
+@@ -116,6 +117,10 @@
+ 			}
+ 			sweet_vtimer_intid = intid;
+ 		}
++		char trial[64] = "unspecified";
++		PE_parse_boot_argn("timelm_trial", trial, sizeof(trial));
++		kprintf("TIMELM IRQ FIX 0085: trial=%s timer=%u CNTFRQ=%llu\n",
++		    trial, sweet_vtimer_intid, __builtin_arm_rsr64("CNTFRQ_EL0"));
+ 		kprintf("SWEET GIC: virtual timer INTID %u\n", sweet_vtimer_intid);
+ #endif
+ 
+@@ -176,19 +181,11 @@
+ 		gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
+ 	}
+ 	gicr_write32(GICR_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
+-	/*
+-	 * The CPU interface of a redistributor belongs to a single PE. The
+-	 * bootloader only enables the one of the boot CPU, so without this a
+-	 * secondary PE never receives its timer or the SGIs that XNU uses for
+-	 * IPIs. GICR_CTLR is a secure register on a GIC with security
+-	 * extensions, so the write can be ignored: report what the hardware
+-	 * says instead of assuming it worked.
+-	 */
++	/* GICR_CTLR has no group-enable bits. Group 1 is enabled below via
++	 * GICD_CTLR and ICC_IGRPEN1_EL1; inspect the redistributor read-only. */
+ 	uint32_t gicr_ctlr = gicr_read32(GICR_CTLR);
+-	gicr_write32(GICR_CTLR, gicr_ctlr | GICR_CTLR_ENABLEGRP1NS);
+-	uint32_t gicr_ctlr_now = gicr_read32(GICR_CTLR);
+-	kprintf("SWEET GIC: PE 0x%llx typer=0x%llx ctlr=0x%x->0x%x waker=0x%x igroupr=0x%x isenabler=0x%x gicd=0x%x\n",
+-	    (uint64_t)gicr_pe_base, gicr_read64(GICR_TYPER), gicr_ctlr, gicr_ctlr_now,
++	kprintf("SWEET GIC: PE 0x%llx typer=0x%llx ctlr=0x%x waker=0x%x igroupr=0x%x isenabler=0x%x gicd=0x%x\n",
++	    (uint64_t)gicr_pe_base, gicr_read64(GICR_TYPER), gicr_ctlr,
+ 	    gicr_read32(GICR_WAKER), gicr_read32(GICR_IGROUPR0),
+ 	    gicr_read32(GICR_ISENABLER0), gicd_read32(GICD_CTLR));
+ #else
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -716,6 +716,7 @@
+ extern unsigned char iso_font[256 * 16];
+ 
+ #define FBCON_SCALE     2
++#define FBCON_SCROLL_ROWS 8
+ #define FBCON_FG        0xffffffffu
+ #define FBCON_BG        0xff000000u
+ 
+@@ -735,20 +736,23 @@
+ }
+ 
+ /*
+- * Move the text area up by one row and clear the last row: the screen then
+- * shows the most recent lines in the order they were printed.
++ * Scroll in batches to amortize uncached framebuffer reads and writes.
++ * Text stays chronological, with room for the next eight lines.
+  */
+ static void
+ fbcon_scroll(void)
+ {
+ 	uint32_t row_words = (fbcon_stride / 4) * (16 * FBCON_SCALE);
+ 	volatile uint32_t *dst = fbcon_base;
+-	volatile uint32_t *src = fbcon_base + row_words;
+-
+-	for (uint32_t i = 0; i < row_words * (fbcon_rows - 1); i++) {
++	uint32_t rows = fbcon_rows > FBCON_SCROLL_ROWS ? FBCON_SCROLL_ROWS : 1;
++	volatile uint32_t *src = fbcon_base + row_words * rows;
++
++	for (uint32_t i = 0; i < row_words * (fbcon_rows - rows); i++) {
+ 		dst[i] = src[i];
+ 	}
+-	fbcon_clear_row(fbcon_rows - 1);
++	for (uint32_t row = fbcon_rows - rows; row < fbcon_rows; row++) {
++		fbcon_clear_row(row);
++	}
+ }
+ 
+ static void
+@@ -757,7 +761,7 @@
+ 	fbcon_col = 0;
+ 	if (fbcon_row + 1 >= fbcon_rows) {
+ 		fbcon_scroll();
+-		fbcon_row = fbcon_rows - 1;
++		fbcon_row = fbcon_rows - (fbcon_rows > FBCON_SCROLL_ROWS ? FBCON_SCROLL_ROWS : 1);
+ 	} else {
+ 		fbcon_row++;
+ 		fbcon_clear_row(fbcon_row);
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -1,6 +1,6 @@
+ /*
+- * Board config for the Redmi Note 10 Pro ("sweet", Qualcomm SM7150 /
+- * Snapdragon 732G): Kryo 470 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
++ * LG V60 (timelm, SM8250) using the inherited SWEET build configuration.
++ * Kryo 585 = Cortex-A77 + Cortex-A55, ARMv8.2, no PAC.
+  *
+  * Generic ARM like BCM2837 (no APPLE_ARM64_ARCH_FAMILY: none of Apple's
+  * implementation-defined system registers exist), 16K pages and GICv3 like
+@@ -18,9 +18,9 @@
+ #define SWEET                     1
+ 
+ /*
+- * All eight cores (six A55 + two A76) as one homogeneous SMP cluster:
++ * All eight cores (four A55 + four A77) as one homogeneous SMP cluster:
+  * cpus=N is clamped here. Same ISA level (ARMv8.2), 64-byte lines, PSCI
+- * CPU_ON; the scheduler does not know the A76s are faster (no AMP/P-E
++ * CPU_ON; the scheduler does not know the A77s are faster (no AMP/P-E
+  * clusters yet).
+  */
+ #define SWEET_SMP_MAX_CPUS         8
+@@ -42,12 +42,8 @@
+ #define PLATFORM_PANIC_LOG_DISABLED
+ #endif /* ! ASSEMBLER */
+ 
+-/*
+- * Qualcomm numbers the architected timer PPIs 1/2/3/0 (secure phys, phys,
+- * virt, hyp) instead of the usual 13/14/11/10: the virtual timer XNU uses
+- * (CNTV) is INTID 16 + 3 = 19.
+- */
+-#define SWEET_VTIMER_INTID        19
++/* timelm /timer: virtual PPI 11, absolute INTID 16 + 11 = 27. */
++#define SWEET_VTIMER_INTID        27
+ #define SWEET_IPI_SGI             1       // SGI used for cross-CPU signals
+ 
+ #define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt
+@@ -69,11 +65,8 @@
+ #define GICR_ISENABLER0                         0x10100
+ #define GICR_IPRIORITYR0                        0x10400
+ 
+-/* CPU interface of a redistributor (per PE). */
++/* Redistributor control, read-only during this bring-up. */
+ #define GICR_CTLR                               0x0
+-#define GICR_CTLR_ENABLEGRP0                   0x1
+-#define GICR_CTLR_ENABLEGRP1NS                 0x2
+-#define GICR_CTLR_ENABLEGRP1S                  0x4
+ 
+ #define GICR_TYPER_AFFINITY_VALUE_SHIFT         32
+ #define GICR_TYPER_LAST                         0x10

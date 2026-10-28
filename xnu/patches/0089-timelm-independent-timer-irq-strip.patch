@@ -1,0 +1,232 @@
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -95,6 +95,17 @@
+        TIMELM_LOG_START };
+ enum { TIMELM_UFS_IDLE, TIMELM_UFS_PREPARE, TIMELM_UFS_WAIT,
+        TIMELM_UFS_ERROR };
++/* 0089 timer observer has a separate 32-row strip above the 0088 footer. */
++enum { TIMELM_I_ENTER, TIMELM_I_DONE, TIMELM_I_ENTER_ABS,
++       TIMELM_I_DONE_ABS, TIMELM_I_PC, TIMELM_I_PSR,
++       TIMELM_I_PHASE, TIMELM_I_DRAW_ABS, TIMELM_I_COUNT };
++#define TIMELM_IRQ_ROWS 32
++#define TIMELM_IRQ_DISK_OFFSET 320
++struct timelm_irq_disk {
++    char magic[8];
++    unsigned int version, bytes;
++    unsigned long long values[TIMELM_I_COUNT];
++};
+ #define TIMELM_DIAG_ROWS 64
+ #define TIMELM_DIAG_DISK_OFFSET 64
+ struct timelm_diag_disk {
+@@ -110,6 +121,11 @@
+ extern unsigned long long timelm_diag_values[TIMELM_D_COUNT];
+ extern char timelm_diag_trial[64];
+ void timelm_diag_draw(void);
++extern unsigned int timelm_irq_enabled;
++extern unsigned long long timelm_irq_values[TIMELM_I_COUNT];
++extern unsigned long long timelm_irq_period;
++unsigned int timelm_irq_enter(unsigned long long pc, unsigned long long psr);
++void timelm_irq_done(unsigned int redraw);
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -121,6 +121,10 @@
+ unsigned int timelm_diag_enabled;
+ unsigned long long timelm_diag_values[TIMELM_D_COUNT];
+ char timelm_diag_trial[64] = "unspecified";
++unsigned int timelm_irq_enabled;
++unsigned long long timelm_irq_values[TIMELM_I_COUNT];
++unsigned long long timelm_irq_period;
++_Static_assert(sizeof(struct timelm_irq_disk) == 80, "IRQ diagnostic disk ABI");
+ _Static_assert(sizeof(struct timelm_diag_disk) == 208, "diagnostic disk ABI");
+ 
+ static void
+@@ -824,6 +828,14 @@
+                 }
+                 strlcpy(d.trial, timelm_diag_trial, sizeof(d.trial));
+                 memcpy((char *)bounce + TIMELM_DIAG_DISK_OFFSET, &d, sizeof(d));
++                if (__atomic_load_n(&timelm_irq_enabled, __ATOMIC_ACQUIRE)) {
++                    struct timelm_irq_disk q = { .magic = "TIMELMIQ",
++                        .version = 1, .bytes = sizeof(q) };
++                    for (unsigned int i = 0; i < TIMELM_I_COUNT; i++) {
++                        q.values[i] = __atomic_load_n(&timelm_irq_values[i], __ATOMIC_RELAXED);
++                    }
++                    memcpy((char *)bounce + TIMELM_IRQ_DISK_OFFSET, &q, sizeof(q));
++                }
+             }
+ 			error = ufs_write_blocks(base, 1);
+ 		}
+@@ -910,6 +922,13 @@
+     PE_parse_boot_argn("timelm_diag", &diagnostics, sizeof(diagnostics));
+     PE_parse_boot_argn("timelm_trial", timelm_diag_trial, sizeof(timelm_diag_trial));
+     __atomic_store_n(&timelm_diag_enabled, diagnostics == 1, __ATOMIC_RELEASE);
++    uint32_t irqdiagnostics = 0;
++    PE_parse_boot_argn("timelm_irqdiag", &irqdiagnostics, sizeof(irqdiagnostics));
++    uint64_t period = 0;
++    nanoseconds_to_absolutetime(1000000000ULL, &period);
++    timelm_irq_period = period;
++    __atomic_store_n(&timelm_irq_enabled,
++        diagnostics == 1 && irqdiagnostics == 1 && period != 0, __ATOMIC_RELEASE);
+ 	PE_parse_boot_argn("sweetbeat", &sweet_heartbeat_secs, sizeof(sweet_heartbeat_secs));
+     if (timelm_diag_enabled && sweet_heartbeat_secs == 0) {
+         sweet_heartbeat_secs = 1;
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -152,6 +152,93 @@
+     __asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
++
++/* 0089: only CPU0 timer IRQ writes this strip. No printf, locks or allocation. */
++static unsigned int timelm_irq_strip;
++static inline unsigned long long
++ timelm_irq_get(unsigned int slot)
++{
++    return __atomic_load_n(&timelm_irq_values[slot], __ATOMIC_RELAXED);
++}
++static inline void
++ timelm_irq_set(unsigned int slot, unsigned long long value)
++{
++    __atomic_store_n(&timelm_irq_values[slot], value, __ATOMIC_RELAXED);
++}
++static char *
++ timelm_irq_number(char *p, unsigned long long value, unsigned int base)
++{
++    char digits[20];
++    unsigned int n = 0;
++    do {
++        unsigned int digit = (unsigned int)(value % base);
++        digits[n++] = "0123456789abcdef"[digit];
++        value /= base;
++    } while (value && n < sizeof(digits));
++    while (n) { *p++ = digits[--n]; }
++    return p;
++}
++static void
++ timelm_irq_draw(void)
++{
++    uintptr_t pixels = __atomic_load_n(&timelm_diag_pixels, __ATOMIC_ACQUIRE);
++    if (pixels == 0 || !timelm_irq_strip) { return; }
++    /* Worst case 3x20 decimal + 16 hex + 22 literal bytes fits this buffer. */
++    char text[128], *p = text;
++    const char *label = "I89 I=";
++    while (*label) { *p++ = *label++; }
++    p = timelm_irq_number(p, timelm_irq_get(TIMELM_I_ENTER), 10);
++    *p++ = ' '; *p++ = 'O'; *p++ = '=';
++    p = timelm_irq_number(p, timelm_irq_get(TIMELM_I_DONE), 10);
++    *p++ = ' '; *p++ = 'H'; *p++ = '=';
++    p = timelm_irq_number(p, timelm_diag_get(TIMELM_D_HEARTBEAT), 10);
++    *p++ = ' '; *p++ = 'P'; *p++ = 'C'; *p++ = '=';
++    p = timelm_irq_number(p, timelm_irq_get(TIMELM_I_PC), 16);
++    *p++ = ' ';
++    *p++ = (timelm_irq_get(TIMELM_I_PSR) & 0xf) == 0 ? 'U' : 'K';
++    *p++ = ' '; *p++ = 'F'; *p++ = '=';
++    *p++ = '0' + (char)timelm_irq_get(TIMELM_I_PHASE);
++    *p = 0;
++    uint32_t width = timelm_diag_width, stride = timelm_diag_stride;
++    uint32_t top = timelm_diag_height - TIMELM_DIAG_ROWS - TIMELM_IRQ_ROWS;
++    for (uint32_t gy = 0; gy < TIMELM_IRQ_ROWS; gy++) {
++        volatile uint32_t *row = (volatile uint32_t *)(pixels + (uint64_t)(top + gy) * stride);
++        for (uint32_t x = 0; x < width; x++) {
++            unsigned int col = x / 16, bit = (x % 16) / 2;
++            unsigned char ch = col < (unsigned int)(p - text) ? (unsigned char)text[col] : ' ';
++            row[x] = (iso_font[(unsigned int)ch * 16 + gy / 2] & (1u << bit)) ? 0xffffffff : 0xff000000;
++        }
++    }
++    __asm__ volatile("dsb sy" ::: "memory");
++}
++extern "C" unsigned int
++ timelm_irq_enter(unsigned long long pc, unsigned long long psr)
++{
++    if (!__atomic_load_n(&timelm_irq_enabled, __ATOMIC_ACQUIRE)) { return 0; }
++    unsigned long long now = mach_absolute_time();
++    (void)__atomic_fetch_add(&timelm_irq_values[TIMELM_I_ENTER], 1, __ATOMIC_RELAXED);
++    timelm_irq_set(TIMELM_I_ENTER_ABS, now);
++    timelm_irq_set(TIMELM_I_PC, pc);
++    timelm_irq_set(TIMELM_I_PSR, psr);
++    timelm_irq_set(TIMELM_I_PHASE, 1);
++    if (now - timelm_irq_get(TIMELM_I_DRAW_ABS) >= timelm_irq_period &&
++        __atomic_load_n(&timelm_diag_pixels, __ATOMIC_ACQUIRE) && timelm_irq_strip) {
++        timelm_irq_set(TIMELM_I_DRAW_ABS, now);
++        timelm_irq_draw();
++        return 1;
++    }
++    return 0;
++}
++extern "C" void
++ timelm_irq_done(unsigned int redraw)
++{
++    if (!__atomic_load_n(&timelm_irq_enabled, __ATOMIC_ACQUIRE)) { return; }
++    (void)__atomic_fetch_add(&timelm_irq_values[TIMELM_I_DONE], 1, __ATOMIC_RELAXED);
++    timelm_irq_set(TIMELM_I_DONE_ABS, mach_absolute_time());
++    timelm_irq_set(TIMELM_I_PHASE, 2);
++    if (redraw) { timelm_irq_draw(); }
++}
++
+ class IOMobileFramebufferUserClient;
+ 
+ class AppleCLCD : public IOMobileFramebuffer {
+@@ -233,8 +320,10 @@
+ 	}
+     uint32_t diagnostics = 0;
+     PE_parse_boot_argn("timelm_diag", &diagnostics, sizeof(diagnostics));
+-    fDiagRows = diagnostics == 1 && fHeight > TIMELM_DIAG_ROWS &&
+-        fWidth >= 16 ? TIMELM_DIAG_ROWS : 0;
++    uint32_t irqdiagnostics = 0;
++    PE_parse_boot_argn("timelm_irqdiag", &irqdiagnostics, sizeof(irqdiagnostics));
++    uint32_t rows = TIMELM_DIAG_ROWS + (irqdiagnostics == 1 ? TIMELM_IRQ_ROWS : 0);
++    fDiagRows = diagnostics == 1 && fHeight > rows && fWidth >= 16 ? rows : 0;
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+ 	fLogicalW = fWidth;
+@@ -289,8 +378,12 @@
+         timelm_diag_width = fWidth;
+         timelm_diag_height = fHeight;
+         timelm_diag_stride = fRowBytes;
++        timelm_irq_strip = fDiagRows == TIMELM_DIAG_ROWS + TIMELM_IRQ_ROWS;
+         __atomic_store_n(&timelm_diag_pixels, fPixels, __ATOMIC_RELEASE);
+         IOLog("TIMELM DIAG 0088: independent footer enabled (%u rows)\n", fDiagRows);
++        if (timelm_irq_strip) {
++            IOLog("TIMELM IRQ 0089: CPU0 timer strip enabled, at most 1 entry+done draw/s\n");
++        }
+     }
+ 	return true;
+ }
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1849,6 +1849,8 @@
+ 
+ #if defined(SWEET)
+ extern void sweet_cpu_note_irq(unsigned int cpu, unsigned int timer);
++extern unsigned int timelm_irq_enter(unsigned long long pc, unsigned long long psr);
++extern void timelm_irq_done(unsigned int redraw);
+ #endif
+ 
+ void
+@@ -1867,11 +1869,14 @@
+ 	 */
+ 	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+ 	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
++    unsigned int timelm_irq_redraw = 0;
+ 
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
+ 	if (intid == sweet_vtimer_intid) {
++        timelm_irq_redraw = cdp->cpu_number == 0 ?
++            timelm_irq_enter(get_saved_state_pc(state), get_saved_state_cpsr(state)) : 0;
+ 		sweet_cpu_note_irq(cdp->cpu_number, 1);
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
+@@ -1899,6 +1904,9 @@
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	}
+ 	__builtin_arm_isb(ISB_SY);
++    if (intid == sweet_vtimer_intid && cdp->cpu_number == 0) {
++        timelm_irq_done(timelm_irq_redraw);
++    }
+ #else
+ 	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 

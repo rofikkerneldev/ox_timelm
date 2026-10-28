@@ -1,0 +1,10 @@
+*.md
+*.markdown
+*.log
+.codex/
+.opencode/
+.claude/
+.cursor/
+__pycache__/
+shim/out/
+xnu/out/

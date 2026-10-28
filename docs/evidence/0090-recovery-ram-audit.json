@@ -1,0 +1,198 @@
+{
+  "banks": [
+    {
+      "base": "0x80000000",
+      "size": "0x39900000",
+      "end_exclusive": "0xb9900000"
+    },
+    {
+      "base": "0x200000000",
+      "size": "0x200000000",
+      "end_exclusive": "0x400000000"
+    },
+    {
+      "base": "0xc0000000",
+      "size": "0xc0000000",
+      "end_exclusive": "0x180000000"
+    }
+  ],
+  "system_ram": [
+    {
+      "base": "0x80600000",
+      "end_exclusive": "0x80700000"
+    },
+    {
+      "base": "0x80894000",
+      "end_exclusive": "0x80900000"
+    },
+    {
+      "base": "0x85e00000",
+      "end_exclusive": "0x86200000"
+    },
+    {
+      "base": "0x8681c000",
+      "end_exclusive": "0x86900000"
+    },
+    {
+      "base": "0x90d00000",
+      "end_exclusive": "0xb0000000"
+    },
+    {
+      "base": "0xb0300000",
+      "end_exclusive": "0xb9900000"
+    },
+    {
+      "base": "0xc0000000",
+      "end_exclusive": "0xffc00000"
+    },
+    {
+      "base": "0xffc20000",
+      "end_exclusive": "0x180000000"
+    },
+    {
+      "base": "0x200000000",
+      "end_exclusive": "0x400000000"
+    }
+  ],
+  "reserved": [
+    {
+      "path": "/reserved-memory/hyp_region@80000000",
+      "base": "0x80000000",
+      "size": "0x600000",
+      "end_exclusive": "0x80600000"
+    },
+    {
+      "path": "/reserved-memory/xbl_aop_region@80700000",
+      "base": "0x80700000",
+      "size": "0x160000",
+      "end_exclusive": "0x80860000"
+    },
+    {
+      "path": "/reserved-memory/reserved-memory@80860000",
+      "base": "0x80860000",
+      "size": "0x20000",
+      "end_exclusive": "0x80880000"
+    },
+    {
+      "path": "/reserved-memory/res_xbl_uefi_log_region@80880000",
+      "base": "0x80880000",
+      "size": "0x14000",
+      "end_exclusive": "0x80894000"
+    },
+    {
+      "path": "/reserved-memory/smem_region@80900000",
+      "base": "0x80900000",
+      "size": "0x200000",
+      "end_exclusive": "0x80b00000"
+    },
+    {
+      "path": "/reserved-memory/removed_region@80b00000",
+      "base": "0x80b00000",
+      "size": "0x5300000",
+      "end_exclusive": "0x85e00000"
+    },
+    {
+      "path": "/reserved-memory/pil_camera_region@86200000",
+      "base": "0x86200000",
+      "size": "0x500000",
+      "end_exclusive": "0x86700000"
+    },
+    {
+      "path": "/reserved-memory/pil_wlan_fw_region@86700000",
+      "base": "0x86700000",
+      "size": "0x100000",
+      "end_exclusive": "0x86800000"
+    },
+    {
+      "path": "/reserved-memory/pil_ipa_fw_region@86800000",
+      "base": "0x86800000",
+      "size": "0x10000",
+      "end_exclusive": "0x86810000"
+    },
+    {
+      "path": "/reserved-memory/pil_ipa_gsi_region@86810000",
+      "base": "0x86810000",
+      "size": "0xa000",
+      "end_exclusive": "0x8681a000"
+    },
+    {
+      "path": "/reserved-memory/pil_gpu_region@8681a000",
+      "base": "0x8681a000",
+      "size": "0x2000",
+      "end_exclusive": "0x8681c000"
+    },
+    {
+      "path": "/reserved-memory/pil_npu_region@86900000",
+      "base": "0x86900000",
+      "size": "0x500000",
+      "end_exclusive": "0x86e00000"
+    },
+    {
+      "path": "/reserved-memory/pil_video_region@86e00000",
+      "base": "0x86e00000",
+      "size": "0x500000",
+      "end_exclusive": "0x87300000"
+    },
+    {
+      "path": "/reserved-memory/pil_cvp_region@87300000",
+      "base": "0x87300000",
+      "size": "0x500000",
+      "end_exclusive": "0x87800000"
+    },
+    {
+      "path": "/reserved-memory/pil_cdsp_region@87800000",
+      "base": "0x87800000",
+      "size": "0x1400000",
+      "end_exclusive": "0x88c00000"
+    },
+    {
+      "path": "/reserved-memory/pil_slpi_region@88c00000",
+      "base": "0x88c00000",
+      "size": "0x1500000",
+      "end_exclusive": "0x8a100000"
+    },
+    {
+      "path": "/reserved-memory/pil_adsp_region@8a100000",
+      "base": "0x8a100000",
+      "size": "0x2500000",
+      "end_exclusive": "0x8c600000"
+    },
+    {
+      "path": "/reserved-memory/pil_spss_region@8be00000",
+      "base": "0x8c600000",
+      "size": "0x100000",
+      "end_exclusive": "0x8c700000"
+    },
+    {
+      "path": "/reserved-memory/cdsp_secure_heap@8bf00000",
+      "base": "0x8c700000",
+      "size": "0x4600000",
+      "end_exclusive": "0x90d00000"
+    },
+    {
+      "path": "/reserved-memory/cont_splash_region@9c000000",
+      "base": "0x9c000000",
+      "size": "0x1200000",
+      "end_exclusive": "0x9d200000"
+    },
+    {
+      "path": "/reserved-memory/disp_rdump_region@9c000000",
+      "base": "0x9c000000",
+      "size": "0x1200000",
+      "end_exclusive": "0x9d200000"
+    },
+    {
+      "path": "/reserved-memory/dfps_data_region@9e300000",
+      "base": "0x9e300000",
+      "size": "0x100000",
+      "end_exclusive": "0x9e400000"
+    },
+    {
+      "path": "/reserved-memory/ramoops_region@b0000000",
+      "base": "0xb0000000",
+      "size": "0x300000",
+      "end_exclusive": "0xb0300000"
+    }
+  ],
+  "memreserve": []
+}
